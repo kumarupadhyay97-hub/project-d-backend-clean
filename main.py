@@ -5,9 +5,14 @@ import os
 
 app = FastAPI()
 
-API_KEY = os.getenv("2a4405b3b2644a0fbfef25724a5ac90")
+# 🔑 GET API KEY FROM RENDER ENVIRONMENT
+API_KEY = os.getenv("API_KEY")
 
-# 🌍 ALL AFRICAN COUNTRIES (keywords)
+# 🧠 DEBUG (IMPORTANT — REMOVE LATER)
+print("DEBUG API_KEY:", API_KEY)
+
+
+# 🌍 AFRICA KEYWORDS
 AFRICA_KEYWORDS = (
     "Africa OR Nigeria OR Kenya OR South Africa OR Egypt OR Ethiopia OR "
     "Ghana OR Tanzania OR Uganda OR Algeria OR Morocco OR Sudan OR Angola OR "
@@ -17,6 +22,7 @@ AFRICA_KEYWORDS = (
     "Gabon OR Congo OR DRC OR Djibouti OR Lesotho OR Eswatini OR Guinea OR "
     "Guinea-Bissau OR Madagascar OR Mauritania OR Seychelles OR Comoros OR Cape Verde"
 )
+
 
 # 🎨 COLOR LOGIC
 def get_color(title):
@@ -33,10 +39,13 @@ def get_color(title):
     elif any(word in title for word in ["policy", "government", "bill", "law"]):
         return "grey"
     else:
-        return "white"  # fallback (important)
+        return "white"
+
 
 @app.get("/")
 def fetch_news():
+
+    # ❗ IF API KEY MISSING
     if not API_KEY:
         return {"error": "API_KEY not set"}
 
@@ -46,6 +55,7 @@ def fetch_news():
 
     from_time = past.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # 🔥 NEWSAPI USED HERE
     url = (
         f"https://newsapi.org/v2/everything?"
         f"q={AFRICA_KEYWORDS}"
@@ -65,10 +75,10 @@ def fetch_news():
 
     for article in articles:
         title = article.get("title")
-        url = article.get("url")
+        link = article.get("url")
         published = article.get("publishedAt")
 
-        if not title or not url:
+        if not title or not link:
             continue
 
         results.append({
@@ -76,7 +86,7 @@ def fetch_news():
             "country": "Africa",
             "color": get_color(title),
             "timestamp": published,
-            "source_url": url
+            "source_url": link
         })
 
     return results

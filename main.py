@@ -1,87 +1,233 @@
 from fastapi import FastAPI
-import requests
-from datetime import datetime, timedelta
-import os
+from rss_fetcher import fetch_rss_news
+import re
+from collections import defaultdict
 
 app = FastAPI()
 
-API_KEY = os.getenv("API_KEY")
+# -------------------------------
+# AFRICA COUNTRY MAP (FULL + DEMONYMS)
+# -------------------------------
+COUNTRY_MAP = {
+    "algeria": "Algeria", "algerian": "Algeria",
+    "angola": "Angola", "angolan": "Angola",
+    "benin": "Benin", "beninese": "Benin",
+    "botswana": "Botswana",
+    "burkina faso": "Burkina Faso",
+    "burundi": "Burundi", "burundian": "Burundi",
+    "cameroon": "Cameroon", "cameroonian": "Cameroon",
+    "cape verde": "Cape Verde",
+    "central african republic": "Central African Republic",
+    "chad": "Chad", "chadian": "Chad",
+    "comoros": "Comoros",
+    "congo": "Congo",
+    "dr congo": "DR Congo",
+    "ivory coast": "Ivory Coast",
+    "cote d'ivoire": "Ivory Coast",
+    "djibouti": "Djibouti",
+    "egypt": "Egypt", "egyptian": "Egypt",
+    "eritrea": "Eritrea",
+    "ethiopia": "Ethiopia", "ethiopian": "Ethiopia",
+    "gabon": "Gabon",
+    "gambia": "Gambia",
+    "ghana": "Ghana", "ghanaian": "Ghana",
+    "guinea": "Guinea",
+    "kenya": "Kenya", "kenyan": "Kenya",
+    "lesotho": "Lesotho",
+    "liberia": "Liberia",
+    "libya": "Libya", "libyan": "Libya",
+    "madagascar": "Madagascar",
+    "malawi": "Malawi",
+    "mali": "Mali",
+    "mauritania": "Mauritania",
+    "morocco": "Morocco", "moroccan": "Morocco",
+    "mozambique": "Mozambique",
+    "namibia": "Namibia",
+    "niger": "Niger",
+    "nigeria": "Nigeria", "nigerian": "Nigeria",
+    "rwanda": "Rwanda",
+    "senegal": "Senegal",
+    "sierra leone": "Sierra Leone",
+    "somalia": "Somalia",
+    "south africa": "South Africa", "south african": "South Africa",
+    "south sudan": "South Sudan",
+    "sudan": "Sudan",
+    "tanzania": "Tanzania", "tanzanian": "Tanzania",
+    "togo": "Togo",
+    "tunisia": "Tunisia",
+    "uganda": "Uganda", "ugandan": "Uganda",
+    "zambia": "Zambia",
+    "zimbabwe": "Zimbabwe", "zimbabwean": "Zimbabwe"
+}
 
-# 🌍 COUNTRY LIST (for tagging only)
-COUNTRIES = [
-    "Nigeria","Kenya","South Africa","Egypt","Ethiopia","Ghana","Tanzania","Uganda",
-    "Algeria","Morocco","Sudan","Angola","Mozambique","Zambia","Zimbabwe",
-    "Senegal","Tunisia","Libya","Mali","Niger","Chad","Somalia","Namibia",
-    "Botswana","Rwanda","Burundi","Malawi","Sierra Leone","Liberia","Togo",
-    "Benin","Eritrea","Gambia","Gabon","Congo","DR Congo",
-    "Djibouti","Lesotho","Eswatini","Guinea","Madagascar",
-    "Mauritania","Seychelles","Comoros","Cape Verde","Cameroon"
+# -------------------------------
+# NOISE FILTER
+# -------------------------------
+BLOCK_KEYWORDS = [
+    "sport", "football", "cricket", "match", "league",
+    "coach", "tournament", "goal", "cup", "fifa",
+    "nba", "tennis", "olympics", "player", "score",
+    "trump", "russia", "ukraine", "israel", "iran",
+    "celebrity", "movie", "film", "music"
 ]
 
-def detect_country(title):
-    for c in COUNTRIES:
-        if c.lower() in title.lower():
-            return c
-    return "Africa"
+# -------------------------------
+# AFRICA CONTEXT CHECK
+# -------------------------------
+def is_africa_related(title):
+    title = title.lower()
+    africa_terms = [
+        "africa", "african", "african union", "au",
+        "lagos", "nairobi", "cairo", "johannesburg",
+        "addis ababa", "accra", "dakar"
+    ]
+    return any(term in title for term in africa_terms)
 
-def get_color(title):
-    t = title.lower()
+# -------------------------------
+# SOURCE TYPE + WEIGHT
+# -------------------------------
+def get_source_type(source_url):
+    source_url = source_url.lower()
 
-    if any(w in t for w in ["war","attack","conflict","military"]):
+    if "gov" in source_url:
+        return "government", 10
+    if "reuters" in source_url:
+        return "media", 7
+    if "bbc" in source_url or "cnn" in source_url or "aljazeera" in source_url:
+        return "media", 5
+
+    return "media", 3
+
+# -------------------------------
+# SIGNAL CLASSIFICATION
+# -------------------------------
+def get_signal_color(title):
+    title = title.lower()
+
+    if any(w in title for w in ["war", "attack", "conflict", "military", "strike"]):
         return "red"
-    elif any(w in t for w in ["tension","protest","crisis"]):
+    if any(w in title for w in ["tension", "protest", "crisis", "clash"]):
         return "orange"
-    elif any(w in t for w in ["agreement","talks","meeting"]):
+    if any(w in title for w in ["agreement", "deal", "talks", "visit", "summit"]):
         return "blue"
-    elif any(w in t for w in ["economy","investment","growth"]):
-        return "green"
-    elif any(w in t for w in ["policy","government","law"]):
+    if any(w in title for w in ["election", "president", "policy", "economy", "bank", "inflation"]):
         return "grey"
-    else:
-        return "white"
 
+    return "grey"
 
+# -------------------------------
+# DETECT COUNTRY (FIXED)
+# -------------------------------
+def detect_country(title):
+    title = title.lower()
+
+    for key in COUNTRY_MAP:
+        pattern = r"\b" + re.escape(key) + r"\b"
+        if re.search(pattern, title):
+            return COUNTRY_MAP[key]
+
+    return None
+
+# -------------------------------
+# NOISE CHECK
+# -------------------------------
+def is_noise(title):
+    title = title.lower()
+    return any(word in title for word in BLOCK_KEYWORDS)
+
+# -------------------------------
+# REMOVE DUPLICATES
+# -------------------------------
+def remove_duplicates(results):
+    seen = set()
+    unique = []
+
+    for item in results:
+        key = item["title"].lower()[:60]
+
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    return unique
+
+# -------------------------------
+# GROUP BY DATE (TIMELINE SYSTEM)
+# -------------------------------
+def group_by_date(results):
+    grouped = defaultdict(list)
+
+    month_map = {
+        "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
+        "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
+        "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12"
+    }
+
+    for item in results:
+        timestamp = item.get("timestamp", "")
+
+        if timestamp:
+            try:
+                parts = timestamp.split()
+                day = parts[1]
+                month = parts[2]
+                year = parts[3]
+                date = f"{year}-{month_map.get(month, '00')}-{day}"
+            except:
+                date = "Unknown"
+        else:
+            date = "Unknown"
+
+        grouped[date].append(item)
+
+    # SORT INSIDE EACH DAY
+    for date in grouped:
+        grouped[date].sort(key=lambda x: x["timestamp"], reverse=True)
+
+    # SORT DAYS
+    return dict(sorted(grouped.items(), reverse=True))
+
+# -------------------------------
+# MAIN API
+# -------------------------------
 @app.get("/")
-def fetch_news():
-
-    if not API_KEY:
-        return {"error": "API_KEY not set"}
-
-    now = datetime.utcnow()
-    past = now - timedelta(hours=24)
-    from_time = past.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # 🔥 SINGLE STRONG QUERY
-    url = (
-        f"https://newsapi.org/v2/everything?"
-        f"q=Africa"
-        f"&from={from_time}"
-        f"&sortBy=publishedAt"
-        f"&language=en"
-        f"&pageSize=100"
-        f"&apiKey={API_KEY}"
-    )
-
-    response = requests.get(url)
-    data = response.json()
-
-    articles = data.get("articles", [])
+def get_news():
+    rss_data = fetch_rss_news()
     results = []
 
-    for a in articles:
-        title = a.get("title")
-        link = a.get("url")
-        time = a.get("publishedAt")
+    for item in rss_data:
+        title = item.get("title", "")
 
-        if not title or not link:
+        if is_noise(title):
             continue
 
+        country = detect_country(title)
+
+        if country is None:
+            if is_africa_related(title):
+                country = "Regional"
+            else:
+                continue
+
+        color = get_signal_color(title)
+        source_type, weight = get_source_type(item.get("source", ""))
+
         results.append({
+            "id": item.get("link", ""),  # 🔥 UNIQUE ID FOR FLUTTER
+            "type": "rss",
+            "country": country,
+            "color": color,
+            "source_type": source_type,
+            "weight": weight,
             "title": title,
-            "country": detect_country(title),
-            "color": get_color(title),
-            "timestamp": time,
-            "source_url": link
+            "timestamp": item.get("published", ""),
+            "source_url": item.get("link", "")
         })
 
-    return results
+    results = remove_duplicates(results)
+
+    # SORT BY PRIORITY
+    results.sort(key=lambda x: x["weight"], reverse=True)
+
+    # TIMELINE OUTPUT
+    return group_by_date(results)
